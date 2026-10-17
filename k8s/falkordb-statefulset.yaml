@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: falkordb
+  namespace: zero-trust-secops
+  labels:
+    app.kubernetes.io/name: falkordb
+    app.kubernetes.io/component: graph-database
+spec:
+  serviceName: falkordb-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: falkordb
+  template:
+    metadata:
+      labels:
+        app: falkordb
+    spec:
+      containers:
+        - name: falkordb
+          image: falkordb/falkordb:latest
+          command: ["falkordb-server"]
+          args:
+            - "--save"
+            - "60"
+            - "1000"
+            - "--maxmemory"
+            - "16gb"
+            - "--maxmemory-policy"
+            - "noeviction"
+          ports:
+            - containerPort: 6379
+              name: redis-graph
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "8Gi"
+            limits:
+              cpu: "8000m"
+              memory: "18Gi"
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts:
+            - name: falkordb-persistent-storage
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: falkordb-persistent-storage
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: "premium-rwo" # GCP Persistent Disk SSD / AWS io2
+        resources:
+          requests:
+            storage: 100Gi

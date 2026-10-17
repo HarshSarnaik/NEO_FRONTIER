@@ -1,0 +1,222 @@
+# mlops_pipeline.yaml - Planetary-Scale Kubeflow & Vertex AI Pipeline DAG
+# RFC-003: Ultra-Low Latency, Adversarial Self-Play, and Planetary-Scale Orchestration
+# Phase 3: Planetary-Scale MLOps (The Vertex AI Plane)
+
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: planetary-apt-hunting-mlops
+  namespace: vertex-ai-pipelines
+  labels:
+    app.kubernetes.io/name: apt-graph-agent-mlops
+    ml.google.com/pipeline-version: "3.0.0"
+spec:
+  entrypoint: apt-hunting-continuous-learning-dag
+  serviceAccountName: vertex-ai-pipeline-runner
+  arguments:
+    parameters:
+      - name: project_id
+        value: "gcp-zero-trust-secops-prod"
+      - name: region
+        value: "us-central1"
+      - name: falkordb_endpoint
+        value: "falkordb-service.zero-trust-secops.svc.cluster.local:6379"
+      - name: vertex_feature_store_id
+        value: "fs_enterprise_graph_centrality"
+      - name: drift_threshold
+        value: "0.15"
+      - name: shadow_evaluation_hours
+        value: "24"
+      - name: self_play_episodes
+        value: "10000"
+
+  templates:
+    # =========================================================================
+    # Master DAG: Data Extraction -> Drift Check -> Self-Play -> Shadow -> Canary
+    # =========================================================================
+    - name: apt-hunting-continuous-learning-dag
+      dag:
+        tasks:
+          # Step 1: Query FalkorDB & Vertex AI Feature Store for Graph Embeddings
+          - name: extract-features-and-embeddings
+            template: data-extraction-and-feature-store-sync
+            arguments:
+              parameters:
+                - name: falkordb_host
+                  value: "{{workflow.parameters.falkordb_endpoint}}"
+                - name: feature_store_id
+                  value: "{{workflow.parameters.vertex_feature_store_id}}"
+
+          # Step 2: Concept Drift & Distribution Shift Detection
+          - name: detect-subgraph-drift
+            dependencies: [extract-features-and-embeddings]
+            template: graph-concept-drift-detector
+            arguments:
+              parameters:
+                - name: drift_threshold
+                  value: "{{workflow.parameters.drift_threshold}}"
+
+          # Step 3: Adversarial Self-Play Retraining (AlphaSec Red vs. Blue on Ray)
+          - name: retrain-self-play-policy
+            dependencies: [detect-subgraph-drift]
+            template: adversarial-self-play-trainer
+            when: "{{tasks.detect-subgraph-drift.outputs.parameters.retraining_required}} == true"
+            arguments:
+              parameters:
+                - name: episodes
+                  value: "{{workflow.parameters.self_play_episodes}}"
+
+          # Step 4: Model Evaluation & Benchmark Gate
+          - name: evaluate-model-checkpoint
+            dependencies: [retrain-self-play-policy]
+            template: model-evaluator-benchmark
+
+          # Step 5: Istio Shadow Traffic Mirroring Deployment
+          - name: deploy-shadow-rollout
+            dependencies: [evaluate-model-checkpoint]
+            template: istio-shadow-rollout-deploy
+            arguments:
+              parameters:
+                - name: duration_hours
+                  value: "{{workflow.parameters.shadow_evaluation_hours}}"
+
+          # Step 6: Automated Canary Promotion (Progressive Traffic Shifting)
+          - name: promote-canary-to-production
+            dependencies: [deploy-shadow-rollout]
+            template: automated-canary-promoter
+
+    # =========================================================================
+    # Task Templates
+    # =========================================================================
+
+    # 1. Feature Store Sync (PageRank, Katz Centrality, In/Out Degrees)
+    - name: data-extraction-and-feature-store-sync
+      inputs:
+        parameters:
+          - name: falkordb_host
+          - name: feature_store_id
+      container:
+        image: gcr.io/gcp-zero-trust-secops-prod/feature-extractor:v3.0.0
+        command: [python, -u, "/app/sync_vertex_features.py"]
+        args:
+          - "--falkordb-host={{inputs.parameters.falkordb_host}}"
+          - "--feature-store={{inputs.parameters.feature_store_id}}"
+        resources:
+          requests:
+            cpu: "2000m"
+            memory: "4Gi"
+          limits:
+            cpu: "4000m"
+            memory: "8Gi"
+
+    # 2. Concept Drift Detection (Wasserstein Distance on 128-dim Subgraph Embeddings)
+    - name: graph-concept-drift-detector
+      inputs:
+        parameters:
+          - name: drift_threshold
+      outputs:
+        parameters:
+          - name: retraining_required
+            valueFrom:
+              path: /tmp/retraining_required.txt
+      container:
+        image: gcr.io/gcp-zero-trust-secops-prod/drift-detector:v3.0.0
+        command: [python, -u, "/app/detect_drift.py"]
+        args:
+          - "--threshold={{inputs.parameters.drift_threshold}}"
+          - "--output-flag=/tmp/retraining_required.txt"
+        resources:
+          requests:
+            cpu: "1000m"
+            memory: "2Gi"
+
+    # 3. Ray Distributed Self-Play Retraining (Red vs. Blue)
+    - name: adversarial-self-play-trainer
+      inputs:
+        parameters:
+          - name: episodes
+      outputs:
+        artifacts:
+          - name: candidate-policy
+            path: /models/candidate_dqn_policy.pt
+      container:
+        image: gcr.io/gcp-zero-trust-secops-prod/ray-selfplay-trainer:v3.0.0
+        command: [python, -u, "self_play_env.py"]
+        args:
+          - "--episodes={{inputs.parameters.episodes}}"
+          - "--output-model=/models/candidate_dqn_policy.pt"
+        resources:
+          requests:
+            cpu: "8000m"
+            memory: "16Gi"
+            nvidia.com/gpu: "1"
+          limits:
+            cpu: "16000m"
+            memory: "32Gi"
+            nvidia.com/gpu: "2"
+
+    # 4. Model Evaluation & Benchmark Gate
+    - name: model-evaluator-benchmark
+      inputs:
+        artifacts:
+          - name: candidate-policy
+            path: /models/candidate_dqn_policy.pt
+      container:
+        image: gcr.io/gcp-zero-trust-secops-prod/model-evaluator:v3.0.0
+        command: [python, -u, "/app/benchmark_adversary.py"]
+        args:
+          - "--checkpoint=/models/candidate_dqn_policy.pt"
+          - "--min-catch-rate=0.98"
+          - "--max-false-positives=0.001"
+
+    # 5. Istio Shadow Rollout (Mirrors Live Graph Traversal Requests)
+    - name: istio-shadow-rollout-deploy
+      inputs:
+        parameters:
+          - name: duration_hours
+      container:
+        image: gcr.io/gcp-zero-trust-secops-prod/istio-deployer:v3.0.0
+        command: ["bash", "-c"]
+        args:
+          - |
+            cat <<EOF | kubectl apply -f -
+            apiVersion: networking.istio.io/v1alpha3
+            kind: VirtualService
+            metadata:
+              name: apt-api-gateway-shadow-route
+              namespace: zero-trust-secops
+            spec:
+              hosts:
+                - apt-api-gateway.zero-trust-secops.svc.cluster.local
+              http:
+                - route:
+                    - destination:
+                        host: apt-api-gateway-prod
+                        subset: v2-stable
+                      weight: 100
+                  mirror:
+                    host: apt-api-gateway-candidate
+                    subset: v3-shadow
+                  mirrorPercentage:
+                    value: 100.0
+            EOF
+            echo "Shadow mode deployed for {{inputs.parameters.duration_hours}} hours."
+
+    # 6. Automated Canary Promotion (Progressive Weight Shifting)
+    - name: automated-canary-promoter
+      container:
+        image: gcr.io/gcp-zero-trust-secops-prod/istio-deployer:v3.0.0
+        command: ["bash", "-c"]
+        args:
+          - |
+            echo "Stage 1: Promoting Candidate to 10% traffic..."
+            kubectl patch virtualservice apt-api-gateway-shadow-route -n zero-trust-secops --type merge \
+              -p '{"spec":{"http":[{"route":[{"destination":{"host":"apt-api-gateway-prod","subset":"v2-stable"},"weight":90},{"destination":{"host":"apt-api-gateway-candidate","subset":"v3-canary"},"weight":10}]}]}}'
+            sleep 300
+            echo "Stage 2: Promoting Candidate to 50% traffic..."
+            kubectl patch virtualservice apt-api-gateway-shadow-route -n zero-trust-secops --type merge \
+              -p '{"spec":{"http":[{"route":[{"destination":{"host":"apt-api-gateway-prod","subset":"v2-stable"},"weight":50},{"destination":{"host":"apt-api-gateway-candidate","subset":"v3-canary"},"weight":50}]}]}}'
+            sleep 300
+            echo "Stage 3: Full Cutover: 100% Canary Promotion Complete."
+            kubectl patch virtualservice apt-api-gateway-shadow-route -n zero-trust-secops --type merge \
+              -p '{"spec":{"http":[{"route":[{"destination":{"host":"apt-api-gateway-candidate","subset":"v3-canary"},"weight":100}]}]}}'

@@ -1,0 +1,22 @@
+[package]
+name = "rust_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.20.0", features = ["extension-module"] }
+arrow = { version = "50.0.0", features = ["ipc"] }
+memmap2 = "0.9.0"
+crossbeam-channel = "0.5.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.36", features = ["full"] }
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+libc = "0.2"
+parking_lot = "0.12"
+log = "0.4"
+env_logger = "0.11"

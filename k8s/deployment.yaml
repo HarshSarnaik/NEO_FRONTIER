@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apt-api-gateway
+  namespace: zero-trust-secops
+  labels:
+    app.kubernetes.io/name: apt-api-gateway
+    app.kubernetes.io/component: serving-layer
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: apt-api-gateway
+  template:
+    metadata:
+      labels:
+        app: apt-api-gateway
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["apt-api-gateway"]
+                topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: gateway
+          image: gcr.io/zero-trust-cloud/apt-api-gateway:v2.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: apt-hunting-config
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apt-stream-processor
+  namespace: zero-trust-secops
+  labels:
+    app.kubernetes.io/name: apt-stream-processor
+    app.kubernetes.io/component: data-plane
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: apt-stream-processor
+  template:
+    metadata:
+      labels:
+        app: apt-stream-processor
+    spec:
+      containers:
+        - name: processor
+          image: gcr.io/zero-trust-cloud/apt-stream-processor:v2.0.0
+          command: ["python", "-u", "stream_processor.py"]
+          envFrom:
+            - configMapRef:
+                name: apt-hunting-config
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ray-head
+  namespace: zero-trust-secops
+  labels:
+    app.kubernetes.io/name: ray-head
+    app.kubernetes.io/component: control-plane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ray-head
+  template:
+    metadata:
+      labels:
+        app: ray-head
+    spec:
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 4Gi
+      containers:
+        - name: ray-head
+          image: rayproject/ray:2.9.0-py310
+          command: ["bash", "-c", "ray start --head --port=6379 --dashboard-host=0.0.0.0 --num-cpus=2 --block"]
+          volumeMounts:
+            - mountPath: /dev/shm
+              name: dshm
+          ports:
+            - containerPort: 8265
+              name: dashboard
+            - containerPort: 10001
+              name: client
+            - containerPort: 6379
+              name: gcs
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "4Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"

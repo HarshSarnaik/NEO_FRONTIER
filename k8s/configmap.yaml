@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apt-hunting-config
+  namespace: zero-trust-secops
+data:
+  FALKORDB_HOST: "falkordb-service.zero-trust-secops.svc.cluster.local"
+  FALKORDB_PORT: "6379"
+  FALKORDB_GRAPH_NAME: "apt_hunt_graph"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka.telemetry.svc.cluster.local:9092"
+  KAFKA_TOPIC_EDR: "telemetry.edr.events"
+  KAFKA_TOPIC_FLOWS: "telemetry.network.zeek"
+  RAY_ADDRESS: "ray-head-service.zero-trust-secops.svc.cluster.local:10001"
+  STREAM_BATCH_SIZE: "250"
+  STREAM_FLUSH_INTERVAL_SEC: "0.2"
+  CONNECTION_TTL_SEC: "3600"
+  PROCESS_TTL_SEC: "86400"
+  PYTHONUNBUFFERED: "1"
