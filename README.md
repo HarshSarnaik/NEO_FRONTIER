@@ -296,6 +296,7 @@ RETURN src, r, neighbor, r2, subneighbor LIMIT 30;
 | **Federated Learning** | [`federated_server.py`](federated_server.py) | Python / PyTorch | Track 2 | Cross-Tenant Federated Averaging (`FedAvg`) server with differential privacy, coordinating isolated enterprise graphs. |
 | **WebGL 3D Nexus** | [`SOCGraphVisualizer.jsx`](SOCGraphVisualizer.jsx) | React / Three.js | Track 2 | 3D WebGL Force-Directed Analyst Nexus rendering 10,000+ nodes, pulsing crimson attack trajectories, and live WebSocket telemetry. |
 | **Generative Forensics**| [`gen_forensics.py`](gen_forensics.py) | Python / Generative RAG | Track 3 | Translates localized Cypher subgraphs and RL traversal chains into executive CISO Incident Response reports. |
+| **Streamlit Dashboard** | [`streamlit_app.py`](streamlit_app.py) | Python / Streamlit | All Tracks | Interactive web dashboard featuring live graph topology, Crown Jewels PageRank explorer, shared memory blackboard, and CISO report viewer. |
 | **SOAR Dispatcher** | [`soar_connector.go`](soar_connector.go) | Go | Track 1 & 2 | High-concurrency Go worker pool translating RL actions into Chronicle UDM, Cortex XSOAR, CrowdStrike, and Okta. |
 
 ---
@@ -493,16 +494,19 @@ FALKORDB_PASSWORD=your_password_here
 # 2. Run Complete 7-Stage Judge Demonstration
 .\run.ps1 demo
 
-# 3. Start High-Frequency API Gateway (FastAPI)
+# 3. Launch Interactive Streamlit Web Dashboard (Port 8501)
+.\run.ps1 dashboard
+
+# 4. Start High-Frequency API Gateway (FastAPI, Port 8000)
 .\run.ps1 serve
 
-# 4. Optional: Run 1,000-Episode Dueling DQN Training from Scratch
+# 5. Optional: Run 1,000-Episode Dueling DQN Training from Scratch
 .\run.ps1 train
 
-# 5. Optional: Run AlphaSec Adversarial Self-Play
+# 6. Optional: Run AlphaSec Adversarial Self-Play
 .\run.ps1 train-self-play
 
-# 6. Optional: Run Cross-Tenant Federated Learning Simulation
+# 7. Optional: Run Cross-Tenant Federated Learning Simulation
 .\run.ps1 federated
 ```
 
@@ -515,6 +519,7 @@ make install          # Install Python dependencies from requirements.txt
 make up               # Spin up local FalkorDB Docker container
 make init-db          # Initialize 50-node graph & Cypher indices
 make demo             # Execute complete 7-stage evaluation demo
+make dashboard        # Launch Streamlit web dashboard on port 8501
 make serve            # Launch FastAPI gateway on port 8000
 make train            # Run 1,000-episode Dueling DQN training
 make clean            # Clean temporary files & checkpoints

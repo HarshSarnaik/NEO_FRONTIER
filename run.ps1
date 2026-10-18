@@ -18,7 +18,7 @@
 
 param (
     [Parameter(Position=0)]
-    [ValidateSet("help", "install", "up", "down", "init-db", "train", "train-self-play", "federated", "forensics", "serve", "demo", "clean")]
+    [ValidateSet("help", "install", "up", "down", "init-db", "train", "train-self-play", "federated", "forensics", "serve", "demo", "dashboard", "clean")]
     [string]$Target = "help"
 )
 
@@ -48,6 +48,7 @@ function Show-Help {
     Write-Host "  .\run.ps1 federated       Simulate Cross-Tenant FedAvg privacy aggregation"
     Write-Host "  .\run.ps1 forensics       Generate AI CISO Incident Response report"
     Write-Host "  .\run.ps1 serve           Launch FastAPI Serving Gateway (port 8000)"
+    Write-Host "  .\run.ps1 dashboard       Launch Streamlit Interactive Dashboard (port 8501)"
     Write-Host "  .\run.ps1 demo            Execute end-to-end deterministic judge demo"
     Write-Host "  .\run.ps1 clean           Purge temp files and SSD replay buffer mmaps"
     Write-Host "======================================================================" -ForegroundColor Cyan
@@ -103,6 +104,10 @@ switch ($Target) {
     "demo" {
         Write-Host "[*] Running Deterministic End-to-End Evaluation Demo for Judges..." -ForegroundColor Cyan
         python demo.py
+    }
+    "dashboard" {
+        Write-Host "[*] Launching SentinelNode Streamlit Dashboard on port 8501..." -ForegroundColor Green
+        streamlit run streamlit_app.py
     }
     "clean" {
         Write-Host "[*] Cleaning temporary files and buffers..." -ForegroundColor Yellow

@@ -77,6 +77,10 @@ demo:
 	@echo "[*] Running Deterministic End-to-End Evaluation Demo for Judges..."
 	$(PYTHON) demo.py
 
+dashboard:
+	@echo "[*] Launching SentinelNode Streamlit Dashboard on port 8501..."
+	streamlit run streamlit_app.py
+
 clean:
 	@echo "[*] Cleaning temporary artifacts, checkpoints, and replay buffers..."
 	@rm -rf buffer_ssd_storage/*.dat
