@@ -22,6 +22,19 @@ param (
     [string]$Target = "help"
 )
 
+# Ensure Python is discovered from common installation paths
+$PythonPaths = @(
+    "C:\Users\athar\AppData\Local\Programs\Python\Python311",
+    "C:\Users\athar\AppData\Local\Programs\Python\Python311\Scripts",
+    "$env:LOCALAPPDATA\Programs\Python\Python311",
+    "$env:LOCALAPPDATA\Programs\Python\Python311\Scripts"
+)
+foreach ($p in $PythonPaths) {
+    if ((Test-Path $p) -and ($env:PATH -notlike "*$p*")) {
+        $env:PATH = "$p;$env:PATH"
+    }
+}
+
 function Show-Help {
     Write-Host "======================================================================" -ForegroundColor Cyan
     Write-Host "  FALKORDB AUTONOMOUS APT HUNTING GRAPH-AGENT // POWERSHELL RUNNER" -ForegroundColor Cyan

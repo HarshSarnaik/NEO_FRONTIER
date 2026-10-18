@@ -50,9 +50,11 @@ NUM_RED_ACTIONS = 8
 # 0..7: Move to 1-hop neighbor slot 0..7
 # 8: FLAG_PROCESS
 # 9: ISOLATE_MACHINE
+# 10: RUN_PAGERANK
 BLUE_ACTION_FLAG_PROCESS = 8
 BLUE_ACTION_ISOLATE_MACHINE = 9
-NUM_BLUE_ACTIONS = 10
+BLUE_ACTION_RUN_PAGERANK = 10
+NUM_BLUE_ACTIONS = 11
 
 
 # ============================================================================
@@ -240,6 +242,12 @@ class AlphaSecSelfPlayEnv:
                     event_log["game_outcome"] = "BLUE_VICTORY_HOST_QUARANTINED"
                 else:
                     r_blue -= 5.0  # False alarm isolation penalty
+            elif blue_action == BLUE_ACTION_RUN_PAGERANK:
+                # Blue executes native graph algorithm tool to identify Crown Jewels
+                r_blue += 8.0
+                event_log["blue_tool"] = "FALKORDB_PAGERANK_CROWN_JEWEL_DISCOVERY"
+                if self.blue_node_id == self.crown_jewel_id:
+                    r_blue += 15.0  # Strategic defense bonus on Crown Jewel
 
         # Intermediate reward shaping: Blue rewarded for high observability detection cues
         if not terminated:

@@ -80,7 +80,7 @@ class FederatedAveragingServer:
     Computes weighted parameter updates:
         W_global = sum_{k=1}^K (n_k / N_total) * W_k
     """
-    def __init__(self, state_dim: int = 128, action_dim: int = 10, min_tenants_per_round: int = 2):
+    def __init__(self, state_dim: int = 128, action_dim: int = 11, min_tenants_per_round: int = 2):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.min_tenants = min_tenants_per_round

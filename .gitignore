@@ -1,0 +1,28 @@
+# Environment and credentials
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Binary data and memory maps
+*.dat
+state_mmap.dat
+action_mmap.dat
+reward_mmap.dat
+done_mmap.dat
+
+# Rust target
+target/
+
+# IDE
+.vscode/
+.idea/

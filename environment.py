@@ -11,18 +11,29 @@ Phase 2: Reinforcement Learning Environment for APT Hunt
 - Sub-millisecond Cypher query inside step() and reset() retrieving graph state directly from FalkorDB in RAM.
 """
 
+import time
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 
-from database import get_falkor_client, populate_graph, query_node_state, CYPHER_GET_NODE_AND_NEIGHBORS
+from database import (
+    get_falkor_client,
+    populate_graph,
+    query_node_state,
+    CYPHER_GET_NODE_AND_NEIGHBORS,
+    run_pagerank_centrality,
+    CYPHER_WRITE_ALERT,
+    CYPHER_QUERY_ACTIVE_ALERTS,
+    CYPHER_RESOLVE_ALERT
+)
 
 
 class APTGraphEnv(gym.Env):
     """
     APTGraphEnv - Custom Gymnasium environment interacting with FalkorDB in real time.
     Agents navigate the enterprise graph to locate and contain an active APT campaign.
+    Satisfies hackathon rubric requirement: Graph queries and algorithms as agent tools.
     """
     metadata = {"render_modes": ["human"]}
 
@@ -36,9 +47,25 @@ class APTGraphEnv(gym.Env):
     # 0 .. 7: Move to Neighbor slot 0 to 7
     # 8: Flag Process as compromised
     # 9: Isolate Machine from network
+    # 10: Run Native FalkorDB PageRank algorithm tool to identify Crown Jewels
     ACTION_FLAG_PROCESS = 8
     ACTION_ISOLATE_MACHINE = 9
-    NUM_ACTIONS = 10
+    ACTION_RUN_PAGERANK = 10
+    NUM_ACTIONS = 11
+
+    ACTION_NAMES = {
+        0: "TRAVERSE_NEIGHBOR_0",
+        1: "TRAVERSE_NEIGHBOR_1",
+        2: "TRAVERSE_NEIGHBOR_2",
+        3: "TRAVERSE_NEIGHBOR_3",
+        4: "TRAVERSE_NEIGHBOR_4",
+        5: "TRAVERSE_NEIGHBOR_5",
+        6: "TRAVERSE_NEIGHBOR_6",
+        7: "TRAVERSE_NEIGHBOR_7",
+        8: "FLAG_PROCESS",
+        9: "ISOLATE_MACHINE",
+        10: "RUN_PAGERANK"
+    }
 
     def __init__(
         self,
@@ -59,6 +86,15 @@ class APTGraphEnv(gym.Env):
         # Connect to FalkorDB or Mock fallback
         self.graph = get_falkor_client(host=host, port=port, graph_name=graph_name, force_mock=force_mock)
         self.graph_meta = populate_graph(self.graph, reset=False)
+
+        # Pre-calculate and cache topological centrality via native FalkorDB GraphBLAS algorithms
+        self.crown_jewel_scores: Dict[str, float] = {}
+        try:
+            ranked = run_pagerank_centrality(self.graph)
+            self.crown_jewel_scores = {r.get("name", ""): float(r.get("score", 0.0)) for r in ranked}
+            self.crown_jewel_scores.update({r.get("ip", ""): float(r.get("score", 0.0)) for r in ranked})
+        except Exception:
+            self.crown_jewel_scores = {}
 
         # Gymnasium spaces
         self.action_space = spaces.Discrete(self.NUM_ACTIONS)
@@ -210,6 +246,41 @@ class APTGraphEnv(gym.Env):
                     info["invalid_move"] = True
                     info["event"] = "false_alarm_isolate_machine"
 
+        elif action == self.ACTION_RUN_PAGERANK:
+            # Action 10: Run Native FalkorDB PageRank algorithm tool to identify Crown Jewels
+            ranked = run_pagerank_centrality(self.graph)
+            self.crown_jewel_scores = {r.get("name", ""): float(r.get("score", 0.0)) for r in ranked}
+            self.crown_jewel_scores.update({r.get("ip", ""): float(r.get("score", 0.0)) for r in ranked})
+
+            top_node = ranked[0] if ranked else {"name": "srv-dc", "score": 1.0}
+            top_name = top_node.get("name", "")
+            top_ip = top_node.get("ip", "")
+            top_score = float(top_node.get("score", 1.0))
+
+            reward = 5.0  # Base reward for executing algorithm tool
+            info["algorithm_executed"] = "FalkorDB_PageRank"
+            info["crown_jewel"] = top_name
+            info["crown_jewel_score"] = top_score
+            info["event"] = "pagerank_identified_crown_jewel"
+
+            curr_props = self.current_node_info.get("props", {}) if self.current_node_info else {}
+            curr_name = curr_props.get("name", "")
+            curr_ip = curr_props.get("ip", "")
+
+            # Reward bonus if agent prioritizes defending the identified Crown Jewel node
+            if curr_name == top_name or curr_ip == top_ip:
+                reward += 10.0
+                info["defending_crown_jewel"] = True
+                info["event"] = "prioritizing_crown_jewel_defense"
+            else:
+                is_adj = any(
+                    nb.get("props", {}).get("name") == top_name or nb.get("props", {}).get("ip") == top_ip
+                    for nb in self.cached_neighbors
+                )
+                if is_adj:
+                    reward += 5.0
+                    info["adjacent_to_crown_jewel"] = True
+
         else:
             reward = -5.0
             info["invalid_move"] = True
@@ -238,8 +309,9 @@ class APTGraphEnv(gym.Env):
         cypher_query = CYPHER_GET_NODE_AND_NEIGHBORS
         result = self.graph.query(cypher_query, {"node_id": node_id})
 
-        if result and len(result) > 0:
-            row = result.result_set[0]
+        rows = getattr(result, "result_set", None) or (result if isinstance(result, list) else [])
+        if rows:
+            row = rows[0]
             curr_id = row[0]
             curr_type = row[1]
             curr_props = row[2] or {}
@@ -318,7 +390,14 @@ class APTGraphEnv(gym.Env):
             vec[12] = 0.8  # elevated heuristic telemetry anomaly
         if ctype == "Process" and ("beacon" in props.get("name", "") or "mimikatz" in props.get("name", "")):
             vec[13] = 1.0
-        if ctype == "Machine" and "dc" in props.get("name", ""):
+
+        # PageRank centrality score encoding (Action 10 tool integration)
+        curr_name = props.get("name", "")
+        curr_ip = props.get("ip", "")
+        pr_score = self.crown_jewel_scores.get(curr_name, self.crown_jewel_scores.get(curr_ip, 0.0))
+        if pr_score > 0:
+            vec[14] = float(pr_score)  # FalkorDB PageRank Crown Jewel metric
+        elif ctype == "Machine" and "dc" in curr_name.lower():
             vec[14] = 1.0  # high value target flag
         vec[15] = 1.0  # valid current node bias
 
@@ -368,7 +447,12 @@ class APTGraphEnv(gym.Env):
                     vec[base + 10] = -1.0
 
                 nb_priv = nb_props.get("priv_level", "").lower()
-                if "admin" in nb_priv:
+                nb_name = nb_props.get("name", "")
+                nb_ip = nb_props.get("ip", "")
+                nb_pr = self.crown_jewel_scores.get(nb_name, self.crown_jewel_scores.get(nb_ip, 0.0))
+                if nb_pr > 0:
+                    vec[base + 11] = float(nb_pr)
+                elif "admin" in nb_priv:
                     vec[base + 11] = 1.0
 
                 # EDR suspicious neighbor signal
@@ -378,6 +462,54 @@ class APTGraphEnv(gym.Env):
                     vec[base + 13] = float(nb.get("props", {}).get("pid", 0)) / 65535.0
 
         return vec
+
+    # =========================================================================
+    # Explicit Agent Memory & Coordination Methods (Track 2)
+    # =========================================================================
+
+    def write_threat_alert(self, machine_ip: str, confidence: float = 0.95, severity: str = "CRITICAL") -> Dict[str, Any]:
+        """
+        Explorer Agent Shared Memory: Writes an explicit (:Alert) memory node into FalkorDB
+        linked to the targeted machine via (:Alert)-[:FLAGS]->(:Machine).
+        """
+        alert_id = f"ALERT-{int(time.time() * 1000)}"
+        params = {
+            "machine_ip": machine_ip,
+            "alert_id": alert_id,
+            "confidence": confidence,
+            "severity": severity,
+            "timestamp": time.time()
+        }
+        self.graph.query(CYPHER_WRITE_ALERT, params)
+        return {"alert_id": alert_id, "machine_ip": machine_ip, "confidence": confidence}
+
+    def query_active_alerts(self) -> List[Dict[str, Any]]:
+        """
+        Containment Agent Shared Memory: Queries FalkorDB for active (:Alert) nodes
+        flagged by Explorer agents to prioritize containment interventions.
+        """
+        res = self.graph.query(CYPHER_QUERY_ACTIVE_ALERTS)
+        alerts = []
+        rows = getattr(res, "result_set", None) or (res if isinstance(res, list) else [])
+        for row in rows:
+            alerts.append({
+                "machine_ip": row[0],
+                "machine_id": row[1],
+                "confidence": float(row[2]) if len(row) > 2 else 0.95,
+                "alert_id": row[3] if len(row) > 3 else ""
+            })
+        return alerts
+
+    def resolve_threat_alert(self, machine_ip: str) -> int:
+        """
+        Containment Agent Shared Memory: Updates (:Alert) node status in FalkorDB
+        to 'CONTAINED' once isolation is completed.
+        """
+        res = self.graph.query(CYPHER_RESOLVE_ALERT, {"machine_ip": machine_ip, "timestamp": time.time()})
+        rows = getattr(res, "result_set", None) or (res if isinstance(res, list) else [])
+        if rows:
+            return int(rows[0][0])
+        return 0
 
 
 if __name__ == "__main__":

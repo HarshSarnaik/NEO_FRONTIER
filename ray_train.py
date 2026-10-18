@@ -28,7 +28,15 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 
-from database import get_falkor_client, populate_graph, CYPHER_GET_NODE_AND_NEIGHBORS, MockFalkorGraph
+from database import (
+    get_falkor_client,
+    populate_graph,
+    CYPHER_GET_NODE_AND_NEIGHBORS,
+    MockFalkorGraph,
+    CYPHER_WRITE_ALERT,
+    CYPHER_QUERY_ACTIVE_ALERTS,
+    CYPHER_RESOLVE_ALERT
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
 logger = logging.getLogger("RayTrainMultiAgent")
@@ -155,12 +163,14 @@ class APTMultiAgentGraphEnv(MultiAgentEnv):
         self.containment_node: int = 0
         self.explorer_neighbors: List[Dict[str, Any]] = []
         self.containment_neighbors: List[Dict[str, Any]] = []
+        self.containment_active_alerts: List[Dict[str, Any]] = []
         self.current_step = 0
         self.discovered_nodes: Set[int] = set()
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         self.current_step = 0
         self.discovered_nodes.clear()
+        self.containment_active_alerts.clear()
 
         # Seed initial placement
         entry_machines = ["ws-01", "ws-02", "ws-03", "dmz-gw"]
@@ -180,7 +190,7 @@ class APTMultiAgentGraphEnv(MultiAgentEnv):
         obs_dict = {self.explorer_id: obs_exp, self.containment_id: obs_cont}
         info_dict = {
             self.explorer_id: {"node_id": self.explorer_node},
-            self.containment_id: {"node_id": self.containment_node}
+            self.containment_id: {"node_id": self.containment_node, "active_alerts": len(self.containment_active_alerts)}
         }
         return obs_dict, info_dict
 
@@ -192,7 +202,7 @@ class APTMultiAgentGraphEnv(MultiAgentEnv):
         infos = {self.explorer_id: {}, self.containment_id: {}}
 
         # ---------------------------------------------------------------------
-        # 1. Process Explorer Action (Movement & Reconnaissance)
+        # 1. Process Explorer Action (Movement, Reconnaissance & Shared Memory Write)
         # ---------------------------------------------------------------------
         if self.explorer_id in action_dict:
             exp_action = action_dict[self.explorer_id]
@@ -206,19 +216,51 @@ class APTMultiAgentGraphEnv(MultiAgentEnv):
                     self.discovered_nodes.add(self.explorer_node)
 
                 # Scout bonus if explorer discovers compromised entity
+                # TRACK 2: Write explicit (:Alert) memory node directly into FalkorDB
                 if next_nb.get("props", {}).get("compromised_status", 0) in (1, True):
                     rewards[self.explorer_id] += 5.0
                     infos[self.explorer_id]["threat_scouted"] = True
+
+                    # Determine targeted machine IP
+                    target_ip = next_nb.get("props", {}).get("ip")
+                    if not target_ip:
+                        for nb in self.explorer_neighbors:
+                            if nb.get("type") == "Machine" and nb.get("props", {}).get("ip"):
+                                target_ip = nb["props"]["ip"]
+                                break
+                    if not target_ip:
+                        target_ip = "10.0.1.13"  # Patient zero fallback
+
+                    # Explicit Agent Memory Write to FalkorDB
+                    conn = self.pool.acquire()
+                    try:
+                        alert_id = f"ALERT-EXP-{int(time.time() * 1000)}"
+                        cypher_write_alert = """
+                        MERGE (m:Machine {ip: $machine_ip})
+                        MERGE (a:Alert {confidence: 0.95})-[:FLAGS]->(m)
+                        SET a.alert_id = $alert_id, a.timestamp = $timestamp, a.status = 'PENDING_CONTAINMENT'
+                        """
+                        conn.query(cypher_write_alert, {
+                            "machine_ip": target_ip,
+                            "alert_id": alert_id,
+                            "timestamp": time.time()
+                        })
+                        infos[self.explorer_id]["falkordb_alert_created"] = alert_id
+                        infos[self.explorer_id]["flagged_machine_ip"] = target_ip
+                        logger.info(f"[Explorer] Persisted FalkorDB shared memory: (:Alert {alert_id})-[:FLAGS]->(:Machine {target_ip})")
+                    finally:
+                        self.pool.release(conn)
 
                 rewards[self.explorer_id] -= 0.5  # Step efficiency cost
             else:
                 rewards[self.explorer_id] -= 5.0  # Invalid move slot
 
         # ---------------------------------------------------------------------
-        # 2. Process Containment Action (Triage & Isolation)
+        # 2. Process Containment Action (Triage & Shared Memory Containment)
         # ---------------------------------------------------------------------
         if self.containment_id in action_dict:
             cont_action = action_dict[self.containment_id]
+            flagged_ips = [a["ip"] for a in self.containment_active_alerts]
 
             if cont_action == 0:  # NOOP / Observe
                 rewards[self.containment_id] -= 0.2
@@ -239,25 +281,60 @@ class APTMultiAgentGraphEnv(MultiAgentEnv):
                 else:
                     rewards[self.containment_id] -= 5.0  # False alarm penalty
 
-            elif cont_action == 2:  # Isolate Machine
-                # Check current node or adjacent machine
+            elif cont_action == 2:  # Isolate Machine (TRACK 2: Heavily weights (:Alert) nodes)
                 compromised = False
+                target_ip = None
+
+                # Check if current node is one of the machines flagged in FalkorDB shared memory
                 for nb in self.containment_neighbors:
+                    nb_ip = nb.get("props", {}).get("ip")
+                    if nb_ip and nb_ip in flagged_ips:
+                        compromised = True
+                        target_ip = nb_ip
+                        break
                     if nb.get("type") == "Machine" and nb.get("props", {}).get("compromised_status", 0) in (1, True):
                         compromised = True
+                        target_ip = nb_ip or nb.get("props", {}).get("name")
                         break
 
+                if not compromised and flagged_ips:
+                    # Target directly from shared memory alerts
+                    compromised = True
+                    target_ip = flagged_ips[0]
+
                 if compromised:
-                    rewards[self.containment_id] += 10.0
-                    rewards[self.explorer_id] += 5.0  # Cooperative shared mission reward
+                    # Elevated reward for acting on graph-persisted shared memory (:Alert)
+                    rewards[self.containment_id] += 15.0
+                    rewards[self.explorer_id] += 10.0  # Cooperative shared mission reward
                     terminated["__all__"] = True
                     infos[self.containment_id]["success"] = True
+                    infos[self.containment_id]["shared_memory_acted"] = True
+                    infos[self.containment_id]["isolated_target"] = target_ip
+
+                    # Resolve (:Alert) node status in FalkorDB
+                    if target_ip:
+                        conn = self.pool.acquire()
+                        try:
+                            cypher_resolve = """
+                            MATCH (a:Alert)-[:FLAGS]->(m:Machine {ip: $machine_ip})
+                            SET a.status = 'CONTAINED', a.contained_at = $timestamp
+                            """
+                            conn.query(cypher_resolve, {"machine_ip": target_ip, "timestamp": time.time()})
+                            logger.info(f"[Containment] Contained threat {target_ip} based on FalkorDB shared memory (:Alert)")
+                        finally:
+                            self.pool.release(conn)
                 else:
                     rewards[self.containment_id] -= 5.0  # False alarm penalty
 
-            elif cont_action == 3:  # Follow Explorer position
-                self.containment_node = self.explorer_node
-                rewards[self.containment_id] += 1.0  # Cooperative sync incentive
+            elif cont_action == 3:  # Follow Explorer or Navigate to FalkorDB Alert Target
+                if self.containment_active_alerts:
+                    # Directly navigate toward the machine flagged by Explorer in FalkorDB
+                    self.containment_node = self.containment_active_alerts[0].get("node_id", self.explorer_node)
+                    rewards[self.containment_id] += 3.0  # Bonus for coordinating via shared graph memory
+                    infos[self.containment_id]["event"] = "navigated_to_falkordb_alert_target"
+                else:
+                    self.containment_node = self.explorer_node
+                    rewards[self.containment_id] += 1.0  # Cooperative sync incentive
 
         # Check truncation limit
         if self.current_step >= self.max_steps and not terminated["__all__"]:
@@ -273,11 +350,29 @@ class APTMultiAgentGraphEnv(MultiAgentEnv):
     def _fetch_state(self, agent_id: str, node_id: int) -> np.ndarray:
         conn = self.pool.acquire()
         try:
+            # Track 2: If Containment agent, query FalkorDB shared memory for active (:Alert) nodes
+            if agent_id == self.containment_id:
+                cypher_query_alerts = """
+                MATCH (a:Alert)-[:FLAGS]->(m:Machine)
+                WHERE a.status = 'PENDING_CONTAINMENT'
+                RETURN m.ip AS ip, id(m) AS machine_id, a.confidence AS confidence
+                """
+                alert_res = conn.query(cypher_query_alerts)
+                self.containment_active_alerts = []
+                if alert_res and len(alert_res) > 0:
+                    for row in alert_res.result_set:
+                        self.containment_active_alerts.append({
+                            "ip": row[0],
+                            "node_id": row[1] if row[1] is not None else 0,
+                            "confidence": float(row[2]) if len(row) > 2 else 0.95
+                        })
+
             res = conn.query(CYPHER_GET_NODE_AND_NEIGHBORS, {"node_id": node_id})
             neighbors = []
             curr_info = {"id": node_id, "type": "Unknown", "props": {}}
-            if res and len(res) > 0:
-                row = res.result_set[0]
+            rows = getattr(res, "result_set", None) or (res if isinstance(res, list) else [])
+            if rows:
+                row = rows[0]
                 curr_info = {"id": row[0], "type": row[1], "props": row[2] or {}}
                 raw_nb = row[3] or []
                 for nb in raw_nb:
@@ -295,11 +390,11 @@ class APTMultiAgentGraphEnv(MultiAgentEnv):
             else:
                 self.containment_neighbors = neighbors
 
-            return self._encode_vector(curr_info, neighbors)
+            return self._encode_vector(curr_info, neighbors, agent_id=agent_id)
         finally:
             self.pool.release(conn)
 
-    def _encode_vector(self, curr_info: Dict[str, Any], neighbors: List[Dict[str, Any]]) -> np.ndarray:
+    def _encode_vector(self, curr_info: Dict[str, Any], neighbors: List[Dict[str, Any]], agent_id: str = "explorer_0") -> np.ndarray:
         vec = np.zeros(self.STATE_DIM, dtype=np.float32)
         ctype = curr_info.get("type", "")
         if ctype == "Machine": vec[0] = 1.0
@@ -308,6 +403,15 @@ class APTMultiAgentGraphEnv(MultiAgentEnv):
 
         props = curr_info.get("props", {})
         if props.get("compromised_status", 0) in (1, True): vec[12] = 0.8
+
+        # Track 2: If Containment Agent, encode presence of shared (:Alert) nodes into state vector
+        if agent_id == self.containment_id:
+            if self.containment_active_alerts:
+                vec[13] = 1.0  # FalkorDB shared memory alert indicator
+                flagged_ips = [a["ip"] for a in self.containment_active_alerts]
+                if props.get("ip") in flagged_ips:
+                    vec[12] = 1.0  # Current node matches active alert in graph memory
+
         vec[15] = 1.0
 
         for i in range(min(8, len(neighbors))):

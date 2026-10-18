@@ -142,7 +142,7 @@ class DuelingDQN(nn.Module):
     Decomposes Q(s, a) into state Value V(s) and action Advantage A(s, a)
     to stabilize policy learning across large sparse graph topologies.
     """
-    def __init__(self, state_dim: int = 128, action_dim: int = 10):
+    def __init__(self, state_dim: int = 128, action_dim: int = 11):
         super().__init__()
 
         # Feature representation backbone
@@ -186,7 +186,7 @@ class DQNAgent:
     def __init__(
         self,
         state_dim: int = 128,
-        action_dim: int = 10,
+        action_dim: int = 11,
         lr: float = 3e-4,
         gamma: float = 0.99,
         tau: float = 0.005,

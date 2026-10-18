@@ -138,7 +138,8 @@ ACTION_NAMES = {
     6: "TRAVERSE_NEIGHBOR_6",
     7: "TRAVERSE_NEIGHBOR_7",
     8: "FLAG_PROCESS",
-    9: "ISOLATE_MACHINE"
+    9: "ISOLATE_MACHINE",
+    10: "RUN_PAGERANK"
 }
 
 MITRE_MAPPING = {
@@ -155,7 +156,7 @@ GRAPH = get_falkor_client(force_mock=True)
 populate_graph(GRAPH, reset=False)
 
 class DuelingDQN(nn.Module):
-    def __init__(self, state_dim: int = 128, action_dim: int = 10):
+    def __init__(self, state_dim: int = 128, action_dim: int = 11):
         super().__init__()
         self.feature_extractor = nn.Sequential(
             nn.Linear(state_dim, 256),
@@ -185,7 +186,7 @@ class DuelingDQN(nn.Module):
 
 # Load trained PyTorch policy network
 STATE_DIM = 128
-ACTION_DIM = 10
+ACTION_DIM = 11
 POLICY_NET = DuelingDQN(state_dim=STATE_DIM, action_dim=ACTION_DIM).to(DEVICE)
 
 CHECKPOINT_PATH = "./checkpoints/apt_dqn_agent.pt"
@@ -193,8 +194,17 @@ if os.path.exists(CHECKPOINT_PATH):
     try:
         ckpt = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
         state_dict = ckpt["policy_net"] if isinstance(ckpt, dict) and "policy_net" in ckpt else ckpt
-        POLICY_NET.load_state_dict(state_dict)
-        logger.info(f"Loaded trained RL policy from {CHECKPOINT_PATH}")
+        # Shape-safe parameter transfer for expanded action space
+        model_dict = POLICY_NET.state_dict()
+        for k, v in state_dict.items():
+            if k in model_dict:
+                if model_dict[k].shape == v.shape:
+                    model_dict[k] = v
+                elif len(model_dict[k].shape) == len(v.shape) and model_dict[k].shape[-1] == v.shape[-1]:
+                    min_rows = min(model_dict[k].shape[0], v.shape[0])
+                    model_dict[k][:min_rows] = v[:min_rows]
+        POLICY_NET.load_state_dict(model_dict)
+        logger.info(f"Loaded pre-trained RL policy from {CHECKPOINT_PATH} in evaluation mode (bypassing training)")
     except Exception as e:
         logger.warning(f"Failed to load checkpoint: {e}")
 POLICY_NET.eval()
